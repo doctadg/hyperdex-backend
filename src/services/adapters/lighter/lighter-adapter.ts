@@ -1,6 +1,7 @@
 import { exchangeConfig } from '@/config/exchanges';
 import { logger } from '@/utils/logger';
 import axios, { AxiosInstance } from 'axios';
+import { LighterAuthenticationError } from './lighter-errors';
 
 // ============================================
 // Types Definitions
@@ -142,8 +143,21 @@ export class LighterRestClient {
   // Account Operations
   async getAccount(by: 'index' | 'l1_address', value: string): Promise<LighterAccount> {
     const response = await this.client.get(`/api/v1/account?by=${by}&value=${value}`);
-    // Handle both response.data.data and response.data structures
-    return response.data?.data || response.data;
+    // The response structure is { code: 200, total: 1, accounts: [...] }
+    const accounts = response.data?.accounts || response.data?.data || [];
+    
+    if (Array.isArray(accounts) && accounts.length > 0) {
+      const account = accounts[0];
+      // Map the response fields to our interface
+      return {
+        account_index: account.index || account.account_index,
+        l1_address: account.l1_address,
+        sub_accounts: account.positions, // positions array acts as sub_accounts
+        created_at: account.created_at,
+      };
+    }
+    
+    return response.data;
   }
 
   async getAccountsByL1Address(l1Address: string): Promise<LighterAccount[]> {
@@ -154,7 +168,6 @@ export class LighterRestClient {
   async getAccountPositions(accountIndex: number): Promise<LighterPosition[]> {
     try {
       const account = await this.getAccount('index', accountIndex.toString());
-      // Parse positions from account data
       const positions: LighterPosition[] = [];
       
       logger.debug(`Lighter: Account ${accountIndex} positions`, {
@@ -162,11 +175,28 @@ export class LighterRestClient {
         hasSubAccounts: !!(account && account.sub_accounts),
       });
       
-      if (account && account.sub_accounts) {
-        // Process sub-accounts for positions
-        // This depends on the actual API response structure
-        // TODO: Implement proper position parsing based on API response
+      // sub_accounts contains the positions array from the API response
+      if (account && Array.isArray(account.sub_accounts)) {
+        for (const pos of account.sub_accounts) {
+          // Only include positions with non-zero position size
+          const positionSize = parseFloat(pos.position || '0');
+          if (positionSize !== 0) {
+            positions.push({
+              market_id: pos.market_id,
+              side: pos.sign === 1 ? 'long' : 'short',
+              size: pos.position,
+              entry_price: pos.avg_entry_price,
+              mark_price: '0', // Not provided in this response
+              unrealized_pnl: pos.unrealized_pnl,
+              leverage: pos.initial_margin_fraction,
+              margin: pos.allocated_margin,
+              liquidation_price: pos.liquidation_price,
+            });
+          }
+        }
       }
+      
+      logger.debug(`Lighter: Found ${positions.length} active positions for account ${accountIndex}`);
       return positions;
     } catch (error) {
       logger.error('Lighter: Error getting account positions:', error);
@@ -202,8 +232,12 @@ export class LighterRestClient {
       // Handle both response.data.data and response.data structures
       return response.data?.data || response.data || [];
     } catch (error: any) {
+      // This endpoint requires authentication
+      if (error.response?.status === 401 || error.response?.data?.code === 20001) {
+        throw new LighterAuthenticationError();
+      }
       logger.error('Lighter: Error getting inactive orders:', error.message);
-      return [];
+      throw error;
     }
   }
 
@@ -232,17 +266,49 @@ export class LighterRestClient {
     }
   }
 
+  async getOrderBookOrders(marketId: number, limit: number = 50): Promise<any> {
+    try {
+      const response = await this.client.get(`/api/v1/orderBookOrders?market_id=${marketId}&limit=${limit}`);
+      // Handle both response.data.data and response.data structures
+      const data = response.data?.data || response.data;
+      
+      logger.debug(`Lighter: OrderBookOrders for market ${marketId}`, {
+        hasData: !!data,
+        totalBids: data?.total_bids || 0,
+        totalAsks: data?.total_asks || 0,
+      });
+      
+      return data || { bids: [], asks: [] };
+    } catch (error: any) {
+      logger.error('Lighter: Error getting order book orders:', error.message);
+      return { bids: [], asks: [] };
+    }
+  }
+
   async getRecentTrades(marketId: number, limit: number = 100): Promise<LighterTrade[]> {
     try {
       const response = await this.client.get(`/api/v1/recentTrades?market_id=${marketId}&limit=${limit}`);
-      // Handle both response.data.data and response.data structures
-      const trades = response.data?.data || response.data || [];
+      // The response structure is { code: 200, trades: [...] }
+      const rawTrades = response.data?.trades || response.data?.data || [];
+      
+      // Transform trades to match LighterTrade interface
+      const trades = Array.isArray(rawTrades) ? rawTrades.map((trade: any) => ({
+        trade_id: trade.trade_id,
+        market_id: trade.market_id,
+        price: trade.price,
+        size: trade.size,
+        // is_maker_ask: true means maker was selling (ask), so taker was buying
+        // is_maker_ask: false means maker was buying (bid), so taker was selling
+        side: trade.is_maker_ask ? 'buy' : 'sell',
+        timestamp: trade.timestamp,
+        tx_hash: trade.tx_hash,
+      })) : [];
       
       logger.debug(`Lighter: Recent trades for market ${marketId}`, {
-        count: Array.isArray(trades) ? trades.length : 0,
+        count: trades.length,
       });
       
-      return Array.isArray(trades) ? trades : [];
+      return trades;
     } catch (error: any) {
       logger.error('Lighter: Error getting recent trades:', error.message);
       return [];
@@ -261,7 +327,18 @@ export class LighterRestClient {
     if (limit) params.limit = limit;
 
     const response = await this.client.get('/api/v1/trades', { params });
-    return response.data.data || [];
+    const rawTrades = response.data?.trades || response.data?.data || [];
+    
+    // Transform trades to match LighterTrade interface
+    return Array.isArray(rawTrades) ? rawTrades.map((trade: any) => ({
+      trade_id: trade.trade_id,
+      market_id: trade.market_id,
+      price: trade.price,
+      size: trade.size,
+      side: trade.is_maker_ask ? 'buy' : 'sell',
+      timestamp: trade.timestamp,
+      tx_hash: trade.tx_hash,
+    })) : [];
   }
 
   async getExchangeStats(): Promise<any> {
@@ -309,13 +386,22 @@ export class LighterRestClient {
     limit: number = 100
   ): Promise<any[]> {
     try {
-      const params = { account_index: accountIndex, index, limit };
+      const params = { 
+        by: 'account_index',
+        value: accountIndex.toString(),
+        index, 
+        limit 
+      };
       const response = await this.client.get('/api/v1/accountTxs', { params });
       // Handle both response.data.data and response.data structures
       return response.data?.data || response.data || [];
     } catch (error: any) {
+      // This endpoint requires authentication
+      if (error.response?.status === 401 || error.response?.data?.code === 20001) {
+        throw new LighterAuthenticationError();
+      }
       logger.error('Lighter: Error getting account transactions:', error.message);
-      return [];
+      throw error;
     }
   }
 
@@ -522,17 +608,46 @@ export class LighterAdapter {
 
   async getOrderBook(marketId: number, limit: number = 50): Promise<LighterOrderBook> {
     try {
-      const details = await this.restClient.getOrderBookDetails(marketId);
+      const orderBookData = await this.restClient.getOrderBookOrders(marketId, limit);
       
-      // Handle different response structures
-      const bids = Array.isArray(details?.bids) ? details.bids : details?.order_book?.bids || [];
-      const asks = Array.isArray(details?.asks) ? details.asks : details?.order_book?.asks || [];
+      // Transform individual orders into aggregated price levels [price, size]
+      const bids: Array<[string, string]> = [];
+      const asks: Array<[string, string]> = [];
       
-      // Format the response to match LighterOrderBook interface
+      // Process bids (buy orders)
+      if (Array.isArray(orderBookData?.bids)) {
+        const bidsByPrice = new Map<string, number>();
+        for (const order of orderBookData.bids) {
+          const price = order.price;
+          const size = parseFloat(order.remaining_base_amount || '0');
+          bidsByPrice.set(price, (bidsByPrice.get(price) || 0) + size);
+        }
+        // Sort bids by price descending (highest first)
+        const sortedBids = Array.from(bidsByPrice.entries())
+          .sort((a, b) => parseFloat(b[0]) - parseFloat(a[0]))
+          .slice(0, limit);
+        bids.push(...sortedBids.map(([price, size]) => [price, size.toString()] as [string, string]));
+      }
+      
+      // Process asks (sell orders)
+      if (Array.isArray(orderBookData?.asks)) {
+        const asksByPrice = new Map<string, number>();
+        for (const order of orderBookData.asks) {
+          const price = order.price;
+          const size = parseFloat(order.remaining_base_amount || '0');
+          asksByPrice.set(price, (asksByPrice.get(price) || 0) + size);
+        }
+        // Sort asks by price ascending (lowest first)
+        const sortedAsks = Array.from(asksByPrice.entries())
+          .sort((a, b) => parseFloat(a[0]) - parseFloat(b[0]))
+          .slice(0, limit);
+        asks.push(...sortedAsks.map(([price, size]) => [price, size.toString()] as [string, string]));
+      }
+      
       return {
         market_id: marketId,
-        bids: (bids as any).slice(0, limit) || [],
-        asks: (asks as any).slice(0, limit) || [],
+        bids,
+        asks,
         timestamp: Date.now(),
       };
     } catch (error: any) {
@@ -552,11 +667,14 @@ export class LighterAdapter {
 
   async getTickerData(marketId: number): Promise<LighterTickPrice> {
     try {
-      const stats = await this.restClient.getExchangeStats();
-      const marketStats = stats?.markets?.[marketId] || stats?.market_stats;
+      // Get market details which includes ticker data
+      const details = await this.restClient.getOrderBookDetails(marketId);
       
-      if (!marketStats) {
-        logger.warn(`Lighter: Market ${marketId} stats not found`);
+      // The response is { code: 200, order_book_details: [{ ... }] }
+      const marketData = details?.order_book_details?.[0] || details;
+      
+      if (!marketData || !marketData.last_trade_price) {
+        logger.warn(`Lighter: Market ${marketId} ticker data not found`);
         return {
           market_id: marketId,
           mark_price: '0',
@@ -570,12 +688,14 @@ export class LighterAdapter {
 
       return {
         market_id: marketId,
-        mark_price: marketStats.mark_price || marketStats.last_price || '0',
-        index_price: marketStats.index_price || marketStats.last_price || '0',
-        last_price: marketStats.last_price || marketStats.mark_price || '0',
-        funding_rate: marketStats.funding_rate || '0',
-        open_interest: marketStats.open_interest || '0',
-        volume_24h: marketStats.volume_24h || marketStats.daily_quote_token_volume || '0',
+        // Lighter doesn't provide separate mark/index prices in this endpoint
+        // Using last_trade_price for all price fields
+        mark_price: marketData.last_trade_price?.toString() || '0',
+        index_price: marketData.last_trade_price?.toString() || '0',
+        last_price: marketData.last_trade_price?.toString() || '0',
+        funding_rate: '0', // Not provided in this endpoint
+        open_interest: marketData.open_interest?.toString() || '0',
+        volume_24h: marketData.daily_quote_token_volume?.toString() || '0',
       };
     } catch (error: any) {
       logger.error('Lighter: Error getting ticker data:', error.message);

@@ -44,9 +44,9 @@ import { logger } from '@/utils/logger';
 const TEST_CONFIG = {
   // Use testnet for testing
   baseUrl: 'https://mainnet.zklighter.elliot.ai', // or testnet.zklighter.elliot.ai
-  walletAddress: '0xb401B621fbf1f8F0aEFe5955d6fea2DF1344f19A', // Your wallet
+  walletAddress: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8', // Your wallet
   accountIndex: 65, // Your account index
-  privateKey: '8ef345352201d9c15bb27243df0aeef9051efbfe22fc5acc62c54d20297de3bf', // Your Ed25519 private key (hex string, no 0x prefix)
+  privateKey: '3ad126b9f0a2cc8cb367ef67a6c77389a85e18e20ce8da2edf34d022e9bf1aa8', // Your Ed25519 private key (hex string, no 0x prefix)
   apiKeyIndex: 2,
 };
 

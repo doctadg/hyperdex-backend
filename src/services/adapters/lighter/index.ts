@@ -10,6 +10,7 @@
 export * from './lighter-adapter';
 export * from './lighter-credentials';
 export * from './lighter-signer';
+export * from './lighter-errors';
 
 // Re-export types for convenience
 export type {
