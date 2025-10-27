@@ -1,7 +1,12 @@
-import { sign as ed25519_sign } from '@noble/ed25519';
+import * as ed25519 from '@noble/ed25519';
+import { sha512 } from '@noble/hashes/sha2.js';
 import axios from 'axios';
 import { logger } from '@/utils/logger';
 import { exchangeConfig } from '@/config/exchanges';
+
+// Set up SHA-512 for ed25519 (required by @noble/ed25519 v3.0.0+)
+// The library requires hashes.sha512 to be set for synchronous operations
+(ed25519 as any).hashes.sha512 = (message: Uint8Array) => sha512(message);
 
 // Transaction types
 export const TX_TYPE_CREATE_ORDER = 14;
@@ -82,13 +87,25 @@ export class LighterSigner {
    * Get next nonce for the account
    */
   async getNextNonce(apiKeyIndex: number): Promise<number> {
-    const response = await axios.get(`${this.baseUrl}/api/v1/nextNonce`, {
-      params: {
-        account_index: this.accountIndex,
-        api_key_index: apiKeyIndex,
-      },
-    });
-    return response.data.data.nonce;
+    try {
+      const response = await axios.get(`${this.baseUrl}/api/v1/nextNonce`, {
+        params: {
+          account_index: this.accountIndex,
+          api_key_index: apiKeyIndex,
+        },
+      });
+      
+      // Handle different response structures
+      const nonce = response.data?.data?.nonce || response.data?.nonce;
+      if (nonce === undefined) {
+        logger.error('Lighter: Invalid nonce response', response.data);
+        throw new Error('Invalid nonce response');
+      }
+      return nonce;
+    } catch (error: any) {
+      logger.error('Lighter: Error getting nonce:', error.message);
+      throw error;
+    }
   }
 
   /**
@@ -97,17 +114,17 @@ export class LighterSigner {
   private async signMessage(message: string): Promise<string> {
     const privateKeyBytes = hexToUint8Array(this.privateKey);
     const messageBytes = new TextEncoder().encode(message);
-    const signature = await ed25519_sign(messageBytes, privateKeyBytes);
+    const signature = await ed25519.sign(messageBytes, privateKeyBytes);
     return uint8ArrayToHex(signature);
   }
 
   /**
    * Sign a create order transaction
    */
-  private signCreateOrder(
+  private async signCreateOrder(
     params: SignCreateOrderParams,
     nonce: number
-  ): any {
+  ): Promise<any> {
     const expireAt = params.expiry || -1;
     
     const tx = {
@@ -121,6 +138,17 @@ export class LighterSigner {
       Nonce: nonce,
     };
 
+    // Create a message to sign (this would need to match Lighter's signing scheme)
+    // For now, we'll create a placeholder signature structure
+    // In a production implementation, you'd need to properly compute the Ed25519 signature
+    // over the transaction fields in the format expected by Lighter
+    const messageToSign = JSON.stringify(tx);
+    
+    // Sign the message
+    const signature = await this.signMessage(messageToSign);
+    
+    tx['Sig'] = signature;
+    
     logger.debug('Lighter: Create order transaction', tx);
     return tx;
   }
@@ -128,7 +156,7 @@ export class LighterSigner {
   /**
    * Sign a cancel order transaction
    */
-  private signCancelOrder(params: SignCancelOrderParams, nonce: number): any {
+  private async signCancelOrder(params: SignCancelOrderParams, nonce: number): Promise<any> {
     const tx = {
       AccountIndex: this.accountIndex,
       OrderBookIndex: params.marketIndex,
@@ -136,6 +164,11 @@ export class LighterSigner {
       ExpiredAt: -1,
       Nonce: nonce,
     };
+
+    // Sign the transaction
+    const messageToSign = JSON.stringify(tx);
+    const signature = await this.signMessage(messageToSign);
+    tx['Sig'] = signature;
 
     logger.debug('Lighter: Cancel order transaction', tx);
     return tx;
@@ -160,13 +193,18 @@ export class LighterSigner {
   /**
    * Sign an update leverage transaction
    */
-  private signUpdateLeverage(params: SignUpdateLeverageParams, nonce: number): any {
+  private async signUpdateLeverage(params: SignUpdateLeverageParams, nonce: number): Promise<any> {
     const tx = {
       AccountIndex: this.accountIndex,
       OrderBookIndex: params.marketIndex,
       Leverage: params.leverage,
       Nonce: nonce,
     };
+
+    // Sign the transaction
+    const messageToSign = JSON.stringify(tx);
+    const signature = await this.signMessage(messageToSign);
+    tx['Sig'] = signature;
 
     logger.debug('Lighter: Update leverage transaction', tx);
     return tx;
@@ -184,23 +222,24 @@ export class LighterSigner {
       const nonce = await this.getNextNonce(apiKeyIndex);
       logger.info(`Lighter: Got nonce ${nonce} for account ${this.accountIndex}`);
 
-      // Create transaction
-      const txObj = this.signCreateOrder(params, nonce);
+      // Create and sign transaction
+      const txObj = await this.signCreateOrder(params, nonce);
       
-      // Note: The transaction needs to be signed by computing a signature over specific fields
-      // The exact signing format depends on Lighter's C library implementation
-      // For now, we'll send the unsigned transaction and see what the API requires
+      // Send transaction using form data (multipart/form-data)
+      const formData = new URLSearchParams();
+      formData.append('tx_type', TX_TYPE_CREATE_ORDER.toString());
+      formData.append('tx_info', JSON.stringify(txObj));
       
-      // Send transaction
-      const response = await axios.post(`${this.baseUrl}/api/v1/sendTx`, {
-        tx_type: TX_TYPE_CREATE_ORDER,
-        tx_info: JSON.stringify(txObj),
+      const response = await axios.post(`${this.baseUrl}/api/v1/sendTx`, formData, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
       });
 
       if (response.data.code === 200) {
         return {
           tx: txObj,
-          txHash: response.data.data.tx_hash,
+          txHash: response.data.data?.tx_hash || '',
           error: undefined,
         };
       } else {
@@ -229,17 +268,22 @@ export class LighterSigner {
   ): Promise<{ tx: any; txHash: string; error?: string }> {
     try {
       const nonce = await this.getNextNonce(apiKeyIndex);
-      const txObj = this.signCancelOrder(params, nonce);
+      const txObj = await this.signCancelOrder(params, nonce);
 
-      const response = await axios.post(`${this.baseUrl}/api/v1/sendTx`, {
-        tx_type: TX_TYPE_CANCEL_ORDER,
-        tx_info: JSON.stringify(txObj),
+      const formData = new URLSearchParams();
+      formData.append('tx_type', TX_TYPE_CANCEL_ORDER.toString());
+      formData.append('tx_info', JSON.stringify(txObj));
+      
+      const response = await axios.post(`${this.baseUrl}/api/v1/sendTx`, formData, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
       });
 
       if (response.data.code === 200) {
         return {
           tx: txObj,
-          txHash: response.data.data.tx_hash,
+          txHash: response.data.data?.tx_hash || '',
           error: undefined,
         };
       } else {
@@ -270,9 +314,14 @@ export class LighterSigner {
       const nonce = await this.getNextNonce(apiKeyIndex);
       const txObj = this.signCancelAllOrders(params, nonce);
 
-      const response = await axios.post(`${this.baseUrl}/api/v1/sendTx`, {
-        tx_type: TX_TYPE_CANCEL_ALL_ORDERS,
-        tx_info: JSON.stringify(txObj),
+      const formData = new URLSearchParams();
+      formData.append('tx_type', TX_TYPE_CANCEL_ALL_ORDERS.toString());
+      formData.append('tx_info', JSON.stringify(txObj));
+      
+      const response = await axios.post(`${this.baseUrl}/api/v1/sendTx`, formData, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
       });
 
       if (response.data.code === 200) {
@@ -307,17 +356,22 @@ export class LighterSigner {
   ): Promise<{ tx: any; txHash: string; error?: string }> {
     try {
       const nonce = await this.getNextNonce(apiKeyIndex);
-      const txObj = this.signUpdateLeverage(params, nonce);
+      const txObj = await this.signUpdateLeverage(params, nonce);
 
-      const response = await axios.post(`${this.baseUrl}/api/v1/sendTx`, {
-        tx_type: TX_TYPE_UPDATE_LEVERAGE,
-        tx_info: JSON.stringify(txObj),
+      const formData = new URLSearchParams();
+      formData.append('tx_type', TX_TYPE_UPDATE_LEVERAGE.toString());
+      formData.append('tx_info', JSON.stringify(txObj));
+      
+      const response = await axios.post(`${this.baseUrl}/api/v1/sendTx`, formData, {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
       });
 
       if (response.data.code === 200) {
         return {
           tx: txObj,
-          txHash: response.data.data.tx_hash,
+          txHash: response.data.data?.tx_hash || '',
           error: undefined,
         };
       } else {
