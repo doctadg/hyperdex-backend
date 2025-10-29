@@ -1,5 +1,6 @@
 import { ethers } from 'ethers';
 import WebSocket from 'ws';
+import { Hyperliquid } from 'hyperliquid';
 import fetch from 'node-fetch';
 import { BaseExchangeClient } from './base';
 import { exchangeConfig } from '@/config/exchanges';
@@ -226,11 +227,6 @@ export class HyperliquidClient extends BaseExchangeClient {
   }
 
   private handleTrades(data: HyperliquidAllTradesData): void {
-    if (!data.trades) {
-      logger.warn('Hyperliquid: Received trades message with no trades data');
-      return;
-    }
-
     const trades: Trade[] = data.trades.map((tradeData) => ({
       id: tradeData.hash,
       symbol: tradeData.coin,
@@ -241,7 +237,6 @@ export class HyperliquidClient extends BaseExchangeClient {
       timestamp: tradeData.time,
     }));
     
-    logger.info(`Hyperliquid: Processing ${trades.length} trades - first: ${trades[0]?.symbol} @ ${trades[0]?.price}`);
     this.emit('trades', trades);
   }
 
@@ -346,6 +341,7 @@ export class HyperliquidTradingAdapter implements IPerpetualAdapter {
   readonly id = 'hyperliquid';
   readonly name = 'Hyperliquid';
   
+  private sdk: Hyperliquid;
   private wallet: ethers.Wallet;
   private baseUrl: string;
   private isTestnet: boolean;
@@ -354,11 +350,17 @@ export class HyperliquidTradingAdapter implements IPerpetualAdapter {
   private indexToSymbol = new Map<number, string>();
   private assetMetadata = new Map<string, { universe: number; szDecimals: number }>(); // ADDED
   private metadata?: HLMeta;
+  private isInitialized = false; 
 
   constructor(config: { privateKey: string; isTestnet?: boolean }) {
     this.wallet = new ethers.Wallet(config.privateKey);
-    this.isTestnet = config.isTestnet ?? false;
+    this.isTestnet = false;
     this.baseUrl = 'https://api.hyperliquid.xyz';
+
+    this.sdk = new Hyperliquid({
+      privateKey: config.privateKey,
+      testnet: this.isTestnet,
+    });
     
     logger.info(`Hyperliquid trading adapter initialized for ${this.isTestnet ? 'TESTNET' : 'MAINNET'}`);
   }
@@ -366,7 +368,7 @@ export class HyperliquidTradingAdapter implements IPerpetualAdapter {
   async initialize(): Promise<void> {
     try {
       logger.info('Initializing Hyperliquid trading adapter...');
-      const meta = await this.infoRequest<HLMeta>({ type: 'meta' });
+      const meta = await this.sdk.info.perpetuals.getMeta();
       this.metadata = meta;
       
       meta.universe.forEach((asset, index) => {
@@ -415,62 +417,6 @@ export class HyperliquidTradingAdapter implements IPerpetualAdapter {
     }
   }
 
-  private async exchangeRequest(action: any, nonce: number, signature: { r: string; s: string; v: number }): Promise<any> {
-    try {
-      const response = await fetch(`${this.baseUrl}/exchange`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ 
-          action, 
-          nonce, 
-          signature,
-          vaultAddress: null,
-        }),
-      });
-
-      if (!response.ok) {
-        const text = await response.text();
-        throw new Error(`Exchange API ${response.status}: ${text}`);
-      }
-
-      return await response.json();
-    } catch (error) {
-      logger.error('Exchange API request failed:', error);
-      throw error;
-    }
-  }
-
-  private async signL1Action(action: any, nonce: number): Promise<{ r: string; s: string; v: number }> {
-    try {
-      const payload = {
-        action,
-        vaultAddress: null,
-        nonce,
-      };
-
-      // Simple: just sign the JSON payload
-      const message = JSON.stringify(payload);
-      const messageHash = ethers.hashMessage(message);
-      
-      // Sign using personal_sign (EIP-191)
-      const signature = await this.wallet.signMessage(message);
-      const sig = ethers.Signature.from(signature);
-
-      logger.info('✓ Signature created');
-      logger.info(`   Wallet: ${this.wallet.address}`);
-      logger.info(`   Message: ${message.slice(0, 100)}...`);
-
-      return {
-        r: sig.r,
-        s: sig.s,
-        v: sig.v,
-      };
-    } catch (error) {
-      logger.error('Failed to sign L1 action:', error);
-      throw error;
-    }
-  }
-
   async placeOrder(request: PlaceOrderRequest): Promise<OrderResponse> {
     try {
       logger.info('Placing order:', request);
@@ -482,44 +428,30 @@ export class HyperliquidTradingAdapter implements IPerpetualAdapter {
       }
 
       // Format size with correct decimals
-      const szDecimals = assetInfo.szDecimals || 5;
-      const formattedSize = parseFloat(request.quantity).toFixed(szDecimals);
+      const size = parseFloat(request.quantity);
+      const price = parseFloat(request.price || '0');
 
-      // Map TimeInForce to Hyperliquid format
-      let tif: { tif: string };
-      if (request.timeInForce === 'POST_ONLY') {
-        tif = { tif: 'Alo' }; // Alo = Add Liquidity Only (POST_ONLY)
-      } else {
-        tif = { tif: 'Gtc' }; // Default: Good Till Cancel
-      }
+      const timeInForce = request.timeInForce === 'POST_ONLY' ? 'Alo' : 'Gtc';
 
-      // Build order
-      const order = {
-        a: assetInfo.universe,           // Asset index
-        b: request.side === 'BUY',        // true = buy, false = sell
-        p: request.price || '0',          // Price as string
-        s: formattedSize,                 // Size with correct decimals
-        r: request.reduceOnly || false,   // Reduce only flag
-        t: { limit: tif },
-      };
-
-      const action = {
-        type: 'order',
-        orders: [order],
-        grouping: 'na',
-      };
-
-      const nonce = Date.now();
-      const signature = await this.signL1Action(action, nonce);
-
-      // Send request
-      const result = await this.exchangeRequest(action, nonce, signature);
+      const result = await this.sdk.exchange.placeOrder({
+        coin: request.symbol,
+        is_buy: request.side === 'BUY',
+        sz: size,  // SDK handles trailing zeros automatically
+        limit_px: price,  // SDK handles trailing zeros automatically
+        order_type: { limit: { tif: timeInForce } },
+        reduce_only: request.reduceOnly || false,
+      });
 
       logger.info('Order placed successfully:', result);
 
-      // Parse response
+      // Parse SDK response
       const status = result?.response?.data?.statuses?.[0];
-      const orderId = status?.resting?.oid?.toString() || nonce.toString();
+      
+      if (result.status === 'err') {
+        throw new Error(`Order failed: ${result.response}`);
+      }
+
+      const orderId = status?.resting?.oid?.toString() || Date.now().toString();
 
       return {
         orderId,
@@ -528,9 +460,9 @@ export class HyperliquidTradingAdapter implements IPerpetualAdapter {
         side: request.side,
         type: request.type,
         price: request.price || '0',
-        quantity: formattedSize,
+        quantity: request.quantity,
         filledQuantity: '0',
-        timestamp: nonce,
+        timestamp: Date.now(),
       };
     } catch (error) {
       logger.error('Failed to place order:', error);
@@ -540,19 +472,21 @@ export class HyperliquidTradingAdapter implements IPerpetualAdapter {
 
   async cancelOrder(orderId: string, symbol: string): Promise<CancelResponse> {
     try {
-      const assetIndex = this.symbolToIndex.get(symbol);
-      if (assetIndex === undefined) {
+      const assetInfo = this.assetMetadata.get(symbol);
+      if (!assetInfo) {
         throw new Error(`Unknown symbol: ${symbol}`);
       }
 
-      const action = {
-        type: 'cancel',
-        cancels: [{ a: assetIndex, o: parseInt(orderId) }],
-      };
-
-      const nonce = Date.now();
-      const signature = await this.signL1Action(action, nonce);
-      await this.exchangeRequest(action, nonce, signature);
+      const result = await this.sdk.exchange.cancelOrder({
+        coin: symbol,
+        o: Number(orderId),
+      });
+      
+      if (result.status === 'err') {
+        throw new Error(`Cancel failed: ${result.response}`);
+      }
+      
+      logger.info(`Order ${orderId} cancelled successfully`);
       
       return { orderId, symbol, status: 'SUCCESS' };
     } catch (error) {
@@ -561,26 +495,19 @@ export class HyperliquidTradingAdapter implements IPerpetualAdapter {
     }
   }
 
-
   async getOpenOrders(): Promise<Order[]> {
     try {
       logger.debug('Fetching open orders');
       
-      const response = await this.infoRequest<any>({
-        type: 'openOrders',
-        user: this.wallet.address,
-      });
+      const orders = await this.sdk.info.getUserOpenOrders(this.wallet.address);
       
-      // Hyperliquid returns an array directly or wrapped in response
-      const orders = Array.isArray(response) ? response : (response.orders || []);
-      
-      logger.debug(`Received ${orders.length} open orders from Hyperliquid`);
-      
-      if (orders.length === 0) {
+      if (!orders || orders.length === 0) {
         return [];
       }
+
+      logger.debug(`Received ${orders.length} open orders from Hyperliquid`);
       
-      return orders.map((o: HLOpenOrder) => ({
+      return orders.map((o: any) => ({
         orderId: o.oid.toString(),
         symbol: o.coin,
         side: o.side === 'B' ? 'BUY' as OrderSide : 'SELL' as OrderSide,
@@ -605,14 +532,11 @@ export class HyperliquidTradingAdapter implements IPerpetualAdapter {
 
   async getPositions(): Promise<Position[]> {
     try {
-      const state = await this.infoRequest<HLClearinghouseState>({
-        type: 'clearinghouseState',
-        user: this.wallet.address,
-      });
+      const state = await this.sdk.info.perpetuals.getClearinghouseState(this.wallet.address);
       
       return state.assetPositions
-        .filter(ap => parseFloat(ap.position.szi) !== 0)
-        .map(ap => {
+        .filter((ap: any) => parseFloat(ap.position.szi) !== 0)
+        .map((ap: any) => {
           const szi = parseFloat(ap.position.szi);
           return {
             symbol: ap.position.coin,
@@ -694,22 +618,25 @@ export class HyperliquidTradingAdapter implements IPerpetualAdapter {
 
   async getOrderbook(symbol: string): Promise<Orderbook> {
     try {
-      const book = await this.infoRequest<HLL2Book>({ type: 'l2Book', coin: symbol });
+      // Use symbol as-is (don't add -PERP, SDK handles conversion)
+      const book = await this.sdk.info.getL2Book(symbol);
+      
+      const timestamp = Date.now(); // Use current time since book.time doesn't exist
       
       const levels = book.levels || [[], []];
-      const bidsArray = (Array.isArray(levels[0]) ? levels[0] : []) as Array<{ px: string; sz: string; n: number }>;
-      const asksArray = (Array.isArray(levels[1]) ? levels[1] : []) as Array<{ px: string; sz: string; n: number }>;
+      const bidsArray = levels[0] as Array<{ px: string; sz: string; n: number }>;
+      const asksArray = levels[1] as Array<{ px: string; sz: string; n: number }>;
       
       const bidLevels = bidsArray.slice(0, 20).map(b => ({
         price: b.px,
         size: b.sz,
-        timestamp: book.time || Date.now(),
+        timestamp: timestamp, // Use timestamp variable
       }));
       
       const askLevels = asksArray.slice(0, 20).map(a => ({
         price: a.px,
         size: a.sz,
-        timestamp: book.time || Date.now(),
+        timestamp: timestamp, // Use timestamp variable
       }));
       
       const bidTotalSize = bidLevels.reduce((sum, l) => sum + parseFloat(l.size), 0);
@@ -731,7 +658,7 @@ export class HyperliquidTradingAdapter implements IPerpetualAdapter {
           levels: askLevels,
           totalSize: askTotalSize.toString(),
         },
-        timestamp: book.time || Date.now(),
+        timestamp: timestamp, // Use timestamp variable
         sequence: 0,
         spread: spread.toString(),
         midPrice: midPrice.toString(),
