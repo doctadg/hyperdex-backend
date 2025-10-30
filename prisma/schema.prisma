@@ -1,0 +1,78 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "mongodb"
+  url      = env("DATABASE_URL")
+}
+
+// Stores encrypted delegation credentials from Dynamic webhook
+model DelegationCredentials {
+  id       String @id @default(auto()) @map("_id") @db.ObjectId
+  walletId String @unique
+  address  String @unique
+  userId   String
+  chain    String @default("EVM")
+
+  // Encrypted key share (as received from webhook)
+  encryptedKeyShareCt  String
+  encryptedKeyShareTag String
+  encryptedKeyShareAlg String
+  encryptedKeyShareIv  String
+  encryptedKeyShareEk  String
+
+  // Encrypted wallet API key (as received from webhook)
+  encryptedWalletApiKeyCt  String
+  encryptedWalletApiKeyTag String
+  encryptedWalletApiKeyAlg String
+  encryptedWalletApiKeyIv  String
+  encryptedWalletApiKeyEk  String
+
+  createdAt DateTime  @default(now())
+  expiresAt DateTime?
+
+  @@index([userId])
+  @@map("delegation_credentials")
+}
+
+// Stores Aster API keys generated for delegated wallets
+model AsterApiKey {
+  id       String @id @default(auto()) @map("_id") @db.ObjectId
+  walletId String @unique
+  address  String @unique
+  userId   String
+
+  // Encrypted Aster API credentials
+  asterApiKey        String // Encrypted
+  asterApiSecret     String // Encrypted (private key)
+  asterKeyId         Int?
+  asterSignerAddress String // The signer address from Aster
+
+  createdAt  DateTime  @default(now())
+  expiresAt  DateTime?
+  lastUsedAt DateTime?
+
+  @@index([userId])
+  @@map("aster_api_keys")
+}
+
+model AsterFuturesApiKey {
+  id                 String    @id @default(auto()) @map("_id") @db.ObjectId
+  walletId           String    @unique
+  address            String    @unique // User's EOA (lowercase)
+  userId             String
+  asterApiKey        String
+  asterApiSecret     String
+  asterKeyId         Int
+  asterSignerAddress String // Derived signer address (lowercase)
+  createdAt          DateTime  @default(now())
+  expiresAt          DateTime?
+  lastUsedAt         DateTime?
+
+  @@index([userId])
+}
