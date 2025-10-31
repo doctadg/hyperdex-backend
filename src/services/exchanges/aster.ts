@@ -3,6 +3,10 @@ import { exchangeConfig } from '@/config/exchanges';
 import { OrderbookSnapshot, Trade } from '@/types';
 import { logger } from '@/utils/logger';
 
+import { 
+  OrderSide,
+} from '@/types/trades';
+
 interface AsterMessage {
   stream?: string;
   data?: unknown;
@@ -193,7 +197,7 @@ export class AsterClient extends BaseExchangeClient {
       exchange: 'aster',
       price: data.p,
       size: data.q,
-      side: data.m ? 'sell' : 'buy',
+      side: data.m ? OrderSide.SELL : OrderSide.BUY,
       timestamp: data.E,
     };
 

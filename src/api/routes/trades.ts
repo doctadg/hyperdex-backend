@@ -3,6 +3,43 @@ import { tradeProcessor } from '@/services/processors/trades';
 import { tradeCache } from '@/services/cache/trades';
 import { logger } from '@/utils/logger';
 import { ApiResponse, TradeFilter } from '@/types';
+import { IPerpetualAdapter, PlaceOrderRequest, OrderSide, OrderType } from '@/types/trades';
+
+// ============= TRADING ADAPTER SINGLETON =============
+
+let tradingAdapters: Map<string, IPerpetualAdapter> = new Map();
+
+export function setTradingAdapters(adapters: Map<string, IPerpetualAdapter>) {
+  tradingAdapters = adapters;
+  logger.info(`Trading adapters registered: ${Array.from(adapters.keys()).join(', ')}`);
+}
+
+function getAdapter(exchange: string, res: Response): IPerpetualAdapter | null {
+  if (!tradingAdapters || tradingAdapters.size === 0) {
+    logger.error('Trading adapters not initialized');
+    res.status(500).json({
+      success: false,
+      error: 'Trading service not initialized',
+      timestamp: Date.now(),
+    } as ApiResponse);
+    return null;
+  }
+  
+  const adapter = tradingAdapters.get(exchange);
+  if (!adapter) {
+    logger.warn(`Exchange not supported: ${exchange}`);
+    res.status(404).json({
+      success: false,
+      error: `Exchange "${exchange}" not supported. Available: ${Array.from(tradingAdapters.keys()).join(', ')}`,
+      timestamp: Date.now(),
+    } as ApiResponse);
+    return null;
+  }
+
+  return adapter;
+}
+
+// ============= MARKET DATA (EXISTING) =============
 
 export async function getRecentTrades(req: Request, res: Response): Promise<void> {
   try {
@@ -53,8 +90,8 @@ export async function getRecentTrades(req: Request, res: Response): Promise<void
       exchange: exchange as 'hyperliquid' | 'aster' | 'lighter',
     };
 
-    if (side && (side === 'buy' || side === 'sell')) {
-      filter.side = side;
+    if (side && (side === 'BUY' || side === 'SELL')) {
+      filter.side = side as OrderSide;
     }
 
     if (minSize) filter.minSize = minSize as string;
@@ -248,6 +285,237 @@ export async function getTradeStats(req: Request, res: Response): Promise<void> 
     res.status(500).json({
       success: false,
       error: 'Internal server error',
+      timestamp: Date.now(),
+    } as ApiResponse);
+  }
+}
+
+// ============= TRADING OPERATIONS (NEW) =============
+
+export async function getBalances(req: Request, res: Response): Promise<void> {
+  try {
+    const { exchange } = req.params;
+    logger.info(`Getting balances for ${exchange}`);
+    
+    const adapter = getAdapter(exchange, res);
+    if (!adapter) return;
+    
+    const balances = await adapter.getBalances();
+    
+    logger.info(`Fetched ${balances.length} balances for ${exchange}`);
+    
+    res.json({
+      success: true,
+      data: {
+        exchange,
+        address: adapter.getAddress(),
+        balances,
+      },
+      timestamp: Date.now(),
+    } as ApiResponse);
+  } catch (error) {
+    logger.error(`Error fetching balances:`, error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to fetch balances',
+      timestamp: Date.now(),
+    } as ApiResponse);
+  }
+}
+
+export async function getTradingPositions(req: Request, res: Response): Promise<void> {
+  try {
+    const { exchange } = req.params;
+    logger.info(`Getting positions for ${exchange}`);
+    
+    const adapter = getAdapter(exchange, res);
+    if (!adapter) return;
+    
+    const positions = await adapter.getPositions();
+    
+    logger.info(`Fetched ${positions.length} positions for ${exchange}`);
+    
+    res.json({
+      success: true,
+      data: {
+        exchange,
+        address: adapter.getAddress(),
+        positions,
+        count: positions.length,
+      },
+      timestamp: Date.now(),
+    } as ApiResponse);
+  } catch (error) {
+    logger.error(`Error fetching positions:`, error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to fetch positions',
+      timestamp: Date.now(),
+    } as ApiResponse);
+  }
+}
+
+export async function getOpenOrders(req: Request, res: Response): Promise<void> {
+  try {
+    const { exchange } = req.params;
+    logger.info(`Getting open orders for ${exchange}`);
+    
+    const adapter = getAdapter(exchange, res);
+    if (!adapter) return;
+    
+    const orders = await adapter.getOpenOrders();
+    
+    logger.info(`Fetched ${orders.length} open orders for ${exchange}`);
+    
+    res.json({
+      success: true,
+      data: {
+        exchange,
+        orders,
+        count: orders.length,
+      },
+      timestamp: Date.now(),
+    } as ApiResponse);
+  } catch (error) {
+    logger.error(`Error fetching orders:`, error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to fetch orders',
+      timestamp: Date.now(),
+    } as ApiResponse);
+  }
+}
+
+export async function placeOrder(req: Request, res: Response): Promise<void> {
+  try {
+    const { exchange } = req.params;
+
+    const adapter = getAdapter(exchange, res);
+    if (!adapter) return;
+    
+    const { symbol, side, type, quantity, price, reduceOnly } = req.body;
+    
+    if (!symbol || !side || !type || !quantity) {
+      logger.warn('Place order validation failed:', req.body);
+      res.status(400).json({
+        success: false,
+        error: 'Missing required fields: symbol, side, type, quantity',
+        timestamp: Date.now(),
+      } as ApiResponse);
+      return;
+    }
+    
+    if (!['BUY', 'SELL'].includes(side.toUpperCase())) {
+      res.status(400).json({
+        success: false,
+        error: 'Invalid side. Must be BUY or SELL',
+        timestamp: Date.now(),
+      } as ApiResponse);
+      return;
+    }
+    
+    if (!['LIMIT', 'MARKET'].includes(type.toUpperCase())) {
+      res.status(400).json({
+        success: false,
+        error: 'Invalid type. Must be LIMIT or MARKET',
+        timestamp: Date.now(),
+      } as ApiResponse);
+      return;
+    }
+    
+    const orderRequest: PlaceOrderRequest = {
+      symbol: symbol.toUpperCase(),
+      side: side.toUpperCase() as OrderSide,
+      type: type.toUpperCase() as OrderType,
+      quantity: String(quantity),
+      price: price ? String(price) : undefined,
+      reduceOnly: Boolean(reduceOnly),
+    };
+    
+    logger.info(`Placing order on ${exchange}:`, orderRequest);
+    
+    const result = await adapter.placeOrder(orderRequest);
+    
+    logger.info(`Order placed successfully on ${exchange}:`, {
+      orderId: result.orderId,
+      symbol: result.symbol,
+      status: result.status,
+    });
+    
+    res.json({
+      success: true,
+      data: result,
+      timestamp: Date.now(),
+    } as ApiResponse);
+  } catch (error) {
+    logger.error(`Error placing order:`, error);
+    
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to place order',
+      timestamp: Date.now(),
+    } as ApiResponse);
+  }
+}
+
+export async function cancelOrder(req: Request, res: Response): Promise<void> {
+  try {
+    const { exchange, orderId } = req.params;
+    const { symbol } = req.query;
+    
+    if (!symbol) {
+      res.status(400).json({
+        success: false,
+        error: 'Missing required query parameter: symbol',
+        timestamp: Date.now(),
+      } as ApiResponse);
+      return;
+    }
+    
+    const adapter = getAdapter(exchange, res);
+    if (!adapter) return;
+    
+    logger.info(`Canceling order ${orderId} on ${exchange} for ${symbol}`);
+    
+    const result = await adapter.cancelOrder(orderId, symbol as string);
+    
+    logger.info(`Order canceled successfully on ${exchange}:`, result);
+    
+    res.json({
+      success: true,
+      data: result,
+      timestamp: Date.now(),
+    } as ApiResponse);
+  } catch (error) {
+    logger.error(`Error canceling order:`, error);
+    
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to cancel order',
+      timestamp: Date.now(),
+    } as ApiResponse);
+  }
+}
+
+export async function getTicker(req: Request, res: Response): Promise<void> {
+  try {
+    const { exchange, symbol } = req.params;
+    
+    const adapter = getAdapter(exchange, res);
+    if (!adapter) return;
+    
+    const ticker = await adapter.getTicker(symbol);
+    
+    res.json({
+      success: true,
+      data: ticker,
+      timestamp: Date.now(),
+    } as ApiResponse);
+  } catch (error) {
+    logger.error(`Error fetching ticker:`, error);
+    res.status(500).json({
+      success: false,
+      error: error instanceof Error ? error.message : 'Failed to fetch ticker',
       timestamp: Date.now(),
     } as ApiResponse);
   }

@@ -20,6 +20,13 @@ import {
   getTradeMetrics,
   getCachedTradeSymbols,
   getTradeStats,
+  getBalances,
+  getTradingPositions,
+  getOpenOrders,
+  placeOrder,
+  cancelOrder,
+  getTicker,
+  setTradingAdapters,
 } from './routes/trades';
 
 import {
@@ -127,6 +134,12 @@ app.get('/api', (req, res) => {
           'GET /api/trades/:symbol/metrics': 'Get trade metrics',
           'GET /api/trades/cached': 'Get cached trade symbols',
           'GET /api/trades/stats': 'Get trade statistics',
+          'GET /api/trading/:exchange/balances': 'Get account balances',
+          'GET /api/trading/:exchange/positions': 'Get open positions',
+          'GET /api/trading/:exchange/orders': 'Get open orders',
+          'POST /api/trading/:exchange/orders': 'Place new order',
+          'DELETE /api/trading/:exchange/orders/:orderId': 'Cancel order (requires ?symbol=)',
+          'GET /api/trading/:exchange/ticker/:symbol': 'Get ticker for symbol',
         },
         charts: {
           'GET /api/charts/:symbol/candles': 'Get OHLCV candles',
@@ -154,6 +167,12 @@ app.get('/api/trades/:symbol', getRecentTrades);
 app.get('/api/trades/:symbol/metrics', getTradeMetrics);
 app.get('/api/trades/cached', getCachedTradeSymbols);
 app.get('/api/trades/stats', getTradeStats);
+app.get('/api/trading/:exchange/balances', getBalances);
+app.get('/api/trading/:exchange/positions', getTradingPositions);
+app.get('/api/trading/:exchange/orders', getOpenOrders);
+app.post('/api/trading/:exchange/orders', placeOrder);
+app.delete('/api/trading/:exchange/orders/:orderId', cancelOrder);
+app.get('/api/trading/:exchange/ticker/:symbol', getTicker);
 
 // Charts routes
 app.get('/api/charts/:symbol/candles', getCandles);
