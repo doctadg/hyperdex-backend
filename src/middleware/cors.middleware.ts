@@ -1,8 +1,3 @@
-/**
- * CORS Middleware
- * - Configures Cross-Origin Resource Sharing
- */
-
 import cors from "cors";
 import { config } from "../config/env.config";
 

@@ -5,7 +5,7 @@ import { prisma } from '../lib/prisma';
 import { decrypt } from '../lib/encryption';
 
 const ASTER_BASE_URL = 'https://sapi.asterdex.com';
-const RECV_WINDOW = 5000; // 5 seconds
+const RECV_WINDOW = 5000;
 
 interface AsterSpotOrderParams {
   symbol: string;
@@ -66,6 +66,66 @@ export class AsterBrokerSpotTradingService {
     return await this.sendToAster('/api/v1/order', 'DELETE', signedParams, apiKey);
   }
 
+  //Get Open orders
+  async getOpenOrders(
+    walletIdOrAddress: string,
+    symbol?: string
+  ): Promise<any> {
+    this.log('Getting open orders', { walletIdOrAddress, symbol });
+    const apiKeyCreds = await this.getApiKeyCredentials(walletIdOrAddress);
+    const apiKey = decrypt(apiKeyCreds.asterApiKey);
+    const apiSecret = decrypt(apiKeyCreds.asterApiSecret);
+
+    const params: { symbol?: string } = {};
+    if (symbol) {
+      params.symbol = symbol;
+    }
+
+    const signedParams = this.signRequest(params, apiSecret);
+    return await this.sendToAster('/api/v1/openOrders', 'GET', signedParams, apiKey);
+  }
+
+  //Get All Orders
+  async getAllOrders(
+      walletIdOrAddress: string,
+      params: {
+        symbol: string;
+        orderId?: number;
+        startTime?: number;
+        endTime?: number;
+        limit?: number;
+      }
+    ): Promise<any> {
+      this.log('Getting all orders', { walletIdOrAddress, params });
+      const apiKeyCreds = await this.getApiKeyCredentials(walletIdOrAddress);
+      const apiKey = decrypt(apiKeyCreds.asterApiKey);
+      const apiSecret = decrypt(apiKeyCreds.asterApiSecret);
+
+      const signedParams = this.signRequest(params, apiSecret);
+      return await this.sendToAster('/api/v1/allOrders', 'GET', signedParams, apiKey);
+    }
+
+    // Get My Trades
+    async getMyTrades(
+      walletIdOrAddress: string,
+      params: {
+        symbol: string;
+        orderId?: number;
+        startTime?: number;
+        endTime?: number;
+        fromId?: number;
+        limit?: number;
+      }
+    ): Promise<any> {
+      this.log('Getting user trades (my trades)', { walletIdOrAddress, params });
+      const apiKeyCreds = await this.getApiKeyCredentials(walletIdOrAddress);
+      const apiKey = decrypt(apiKeyCreds.asterApiKey);
+      const apiSecret = decrypt(apiKeyCreds.asterApiSecret);
+
+      const signedParams = this.signRequest(params, apiSecret);
+      return await this.sendToAster('/api/v1/userTrades', 'GET', signedParams, apiKey);
+    }
+
     // Get current account information (balances)
     async getAccountInfo(walletIdOrAddress: string): Promise<any> {
       this.log('Getting Spot Account Info', { walletIdOrAddress });
@@ -80,8 +140,8 @@ export class AsterBrokerSpotTradingService {
       return await this.sendToAster('/api/v1/account', 'GET', signedParams, apiKey);
     }
 
-      // Close Position
-      async closePosition(
+    // Close Position
+  async closePosition(
         walletIdOrAddress: string,
         symbol: string,
         baseAsset: string
@@ -115,6 +175,7 @@ export class AsterBrokerSpotTradingService {
           quantity: freeQuantity.toString(),
         });
       }
+
 
   private async getApiKeyCredentials(walletIdOrAddress: string): Promise<{
     walletId: string;

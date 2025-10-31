@@ -1,10 +1,3 @@
-/**
- * Main Application Entry Point
- * - Initializes Express server
- * - Configures middleware
- * - Registers routes
- * - Starts server
- */
 
 import express from 'express';
 import { config } from './config/env.config';

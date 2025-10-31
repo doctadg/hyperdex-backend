@@ -11,9 +11,8 @@ interface EncryptedData {
   kid?: string;
 }
 
-/**
- * Dynamic webhook payload for wallet.delegation.created
- */
+
+// Dynamic webhook payload for wallet.delegation.created
 interface DelegationCreatedPayload {
   eventId: string;
   webhookId: string;
@@ -33,9 +32,8 @@ interface DelegationCreatedPayload {
   timestamp: string;
 }
 
-/**
- * Dynamic webhook payload for wallet.delegation.revoked
- */
+
+//Dynamic webhook payload for wallet.delegation.revoked
 interface DelegationRevokedPayload {
   eventId: string;
   webhookId: string;
@@ -53,10 +51,7 @@ interface DelegationRevokedPayload {
 
 type DelegationWebhookPayload = DelegationCreatedPayload | DelegationRevokedPayload;
 
-/**
- * Verify webhook signature from Dynamic
- * Dynamic uses x-dynamic-signature-256 header with format: sha256=<hash>
- */
+
 function verifyWebhookSignature(
   payload: string,
   signatureHeader: string | undefined,
@@ -75,21 +70,12 @@ function verifyWebhookSignature(
     return false;
   }
 
-  // Extract signature from "sha256=<hash>" format
   const signature = signatureHeader.replace('sha256=', '');
 
   const expectedSignature = crypto
     .createHmac('sha256', secret)
     .update(payload)
     .digest('hex');
-
-  console.log('[Webhook] Signature verification:', {
-    receivedSignature: signature.substring(0, 16) + '...',
-    expectedSignature: expectedSignature.substring(0, 16) + '...',
-    payloadLength: payload.length,
-    secretLength: secret.length,
-    match: signature === expectedSignature
-  });
 
   try {
     return crypto.timingSafeEqual(
@@ -125,19 +111,9 @@ export async function handleDelegationCreated(
       return;
     }
 
-    // Use raw body for signature verification (should be set by middleware)
     const rawBody = (req as any).rawBody || JSON.stringify(req.body);
     const signature = req.headers['x-dynamic-signature-256'] as string | undefined;
 
-    console.log('[Webhook] Received delegation.created webhook');
-    console.log('[Webhook] Event ID:', req.body.eventId);
-    console.log('[Webhook] User ID:', req.body.userId);
-    console.log('[Webhook] Signature header:', signature);
-    console.log('[Webhook] Has rawBody:', !!(req as any).rawBody);
-    console.log('[Webhook] Body length:', rawBody.length);
-    console.log('[Webhook] First 100 chars of body:', rawBody.substring(0, 100));
-
-    // Verify webhook signature
     if (!verifyWebhookSignature(rawBody, signature, webhookSecret)) {
       console.error('[Webhook] ❌ Invalid signature from IP:', req.ip);
       console.error('[Webhook] Expected signature header: x-dynamic-signature-256');
@@ -163,10 +139,8 @@ export async function handleDelegationCreated(
       return;
     }
 
-    // Store ENCRYPTED credentials in database (DO NOT decrypt here)
     console.log('[Webhook] Storing encrypted credentials in database...');
 
-    // Calculate expiry (24 hours from now)
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
     await prisma.delegationCredentials.upsert({
@@ -245,8 +219,6 @@ export async function handleDelegationRevoked(
       res.status(500).json({ error: 'Server configuration error' });
       return;
     }
-
-    // Use raw body for signature verification (should be set by middleware)
     const rawBody = (req as any).rawBody || JSON.stringify(req.body);
     const signature = req.headers['x-dynamic-signature-256'] as string | undefined;
 
@@ -276,7 +248,6 @@ export async function handleDelegationRevoked(
       return;
     }
 
-    // Delete credentials from database
     await prisma.delegationCredentials.delete({
       where: { walletId },
     });

@@ -1,7 +1,3 @@
-/**
- * Logger Middleware
- * - Logs incoming HTTP requests
- */
 
 import { Request, Response, NextFunction } from "express";
 import { logInfo } from "../utils/logger";

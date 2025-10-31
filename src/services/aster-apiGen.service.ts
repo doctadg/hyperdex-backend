@@ -84,6 +84,7 @@ export class AsterBrokerService {
     const apiKeyData = await this.createApiKey(address, signature, desc);
     const signerWallet = new ethers.Wallet(apiKeyData.apiSecret);
     const derivedSignerAddress = signerWallet.address;
+
     // Store in DB
     await prisma.asterApiKey.create({
       data: {

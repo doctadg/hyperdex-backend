@@ -4,9 +4,6 @@ const ALGORITHM = 'aes-256-gcm';
 const IV_LENGTH = 16;
 const KEY_LENGTH = 32;
 
-/**
- * Get encryption key from environment variable
- */
 function getEncryptionKey(): Buffer {
   const secret = process.env.ENCRYPTION_SECRET || process.env.DELEGATION_ENCRYPTION_KEY;
 
@@ -14,14 +11,10 @@ function getEncryptionKey(): Buffer {
     throw new Error('ENCRYPTION_SECRET or DELEGATION_ENCRYPTION_KEY must be set in environment');
   }
 
-  // Derive a proper 32-byte key from the secret
   return crypto.scryptSync(secret, 'hyperdex-salt', KEY_LENGTH);
 }
 
-/**
- * Encrypt a string value
- * Returns base64-encoded format: iv:authTag:ciphertext
- */
+
 export function encrypt(plaintext: string): string {
   const key = getEncryptionKey();
   const iv = crypto.randomBytes(IV_LENGTH);
@@ -33,14 +26,10 @@ export function encrypt(plaintext: string): string {
 
   const authTag = cipher.getAuthTag();
 
-  // Format: iv:authTag:ciphertext (all base64)
   return `${iv.toString('base64')}:${authTag.toString('base64')}:${ciphertext}`;
 }
 
-/**
- * Decrypt a string value
- * Expects format: iv:authTag:ciphertext (all base64)
- */
+
 export function decrypt(encrypted: string): string {
   const key = getEncryptionKey();
 
@@ -62,20 +51,14 @@ export function decrypt(encrypted: string): string {
   return plaintext;
 }
 
-/**
- * Decrypt hybrid RSA-AES encrypted data from Dynamic webhook
- *
- * Dynamic sends data encrypted with a hybrid approach:
- * 1. AES key is encrypted with RSA public key
- * 2. Data is encrypted with that AES key using AES-256-GCM
- */
+
 export interface DynamicEncryptedData {
-  ct: string;    // Ciphertext (base64)
-  tag: string;   // Authentication tag (base64)
-  alg: string;   // Algorithm (e.g., "HYBRID-RSA-AES-256")
-  iv: string;    // Initialization vector (base64)
-  ek: string;    // Encrypted key (base64)
-  kid?: string;  // Key ID (optional)
+  ct: string;
+  tag: string;
+  alg: string;
+  iv: string;
+  ek: string;
+  kid?: string;
 }
 
 export function decryptDynamicHybridEncryption(
@@ -83,7 +66,6 @@ export function decryptDynamicHybridEncryption(
   privateKey: string
 ): string {
   try {
-    // Step 1: Decrypt the AES key using RSA private key
     const encryptedKeyBuffer = Buffer.from(encryptedData.ek, 'base64');
     const aesKey = crypto.privateDecrypt(
       {
@@ -94,17 +76,14 @@ export function decryptDynamicHybridEncryption(
       encryptedKeyBuffer
     );
 
-    // Step 2: Decrypt the ciphertext using AES-256-GCM
     const decipher = crypto.createDecipheriv(
       'aes-256-gcm',
       aesKey,
       Buffer.from(encryptedData.iv, 'base64')
     );
 
-    // Set the authentication tag
     decipher.setAuthTag(Buffer.from(encryptedData.tag, 'base64'));
 
-    // Decrypt the ciphertext
     let decrypted = decipher.update(encryptedData.ct, 'base64', 'utf8');
     decrypted += decipher.final('utf8');
 
@@ -115,9 +94,7 @@ export function decryptDynamicHybridEncryption(
   }
 }
 
-/**
- * Test encryption/decryption roundtrip
- */
+
 export function testEncryption() {
   const testData = 'Hello, World! 🔐';
 

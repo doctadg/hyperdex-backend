@@ -1,5 +1,5 @@
 import { Request, Response } from 'express';
-import { asterBrokerService } from '../services/aster-broker.service';
+import { asterBrokerService } from '../services/aster-apiGen.service';
 import { asterBrokerSpotTradingService } from '../services/aster-broker-trading.service';
 
 /**
@@ -30,7 +30,6 @@ export async function generateApiKey(
       return;
     }
 
-    // Generate API key
     const result = await asterBrokerService.generateApiKey(identifier);
 
     console.log('[AsterBrokerController] ✅ API key generated successfully', {
@@ -51,7 +50,6 @@ export async function generateApiKey(
   } catch (error: any) {
     console.error('[AsterBrokerController] Error generating API key:', error);
 
-
     if (error.message.includes('already exists')) {
       res.status(409).json({
         success: false,
@@ -69,12 +67,20 @@ export async function generateApiKey(
   }
 }
 
+/**
+ * Get account info
+ * GET /api/aster/broker/info
+ *
+ * Query:
+ * {
+ * walletId: string  // or address
+ * }
+ */
 export async function getAccountInfo(
   req: Request,
   res: Response
 ): Promise<void> {
   try {
-    // 1. Get identifier from req.query
     const { walletId, address } = req.query;
     const identifier = (walletId || address) as string;
 
@@ -82,7 +88,6 @@ export async function getAccountInfo(
       identifier
     });
 
-    // 2. Validate identifier
     if (!identifier) {
       res.status(400).json({
         success: false,
@@ -91,20 +96,16 @@ export async function getAccountInfo(
       });
       return;
     }
-
-    // 3. Call the service
     const result = await asterBrokerSpotTradingService.getAccountInfo(identifier);
 
     console.log('[AsterBrokerController] Account info retrieved');
 
-    // 4. Send response (result from service is the account info object)
     res.status(200).json({
       success: true,
       accountInfo: result
     });
 
   } catch (error: any) {
-    // 5. Handle errors
     console.error('[AsterBrokerController] Error getting account info:', error);
 
     res.status(500).json({
@@ -321,14 +322,14 @@ export async function getOrder(
 }
 
 /**
- * Close spot position (Sell all available base asset)
- * POST /api/aster/broker/positions/close
+ * Close a Spot Position
+ * POST /api/aster/broker/position/close
  *
  * Body:
  * {
  * walletId: string,
- * symbol: string,     (e.g., "BTCUSDT")
- * baseAsset: string   (e.g., "BTC")
+ * symbol: string,
+ * baseAsset: string,
  * }
  */
 export async function closePosition(
@@ -439,6 +440,121 @@ export async function cancelOrder(
       success: false,
       error: 'Failed to cancel order',
       message: error.message
+    });
+  }
+}
+
+/**
+ * Get all open orders for a wallet
+ * GET /api/aster/broker/orders/open?walletId=xxx&symbol=ETHUSDT
+ */
+export async function getOpenOrders(req: Request, res: Response): Promise<void> {
+  try {
+    const { walletId, address, symbol } = req.query;
+    const identifier = (walletId || address) as string;
+
+    if (!identifier) {
+      res.status(400).json({
+        success: false,
+        error: "Missing parameters",
+        message: "walletId (or address) is required in query string",
+      });
+      return;
+    }
+
+    const result = await asterBrokerSpotTradingService.getOpenOrders(identifier, symbol ? (symbol as string) : undefined);
+
+    res.status(200).json({
+      success: true,
+      openOrders: result,
+    });
+  } catch (error: any) {
+    console.error("[AsterBrokerController] Error getting open orders:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to get open orders",
+      message: error.message || "Unknown error occurred",
+    });
+  }
+}
+
+/**
+ * Get all historical orders
+ * GET /api/aster/broker/orders/all?walletId=xxx&symbol=ETHUSDT&limit=50
+ */
+export async function getAllOrders(req: Request, res: Response): Promise<void> {
+  try {
+    const { walletId, address, symbol, orderId, startTime, endTime, limit } = req.query;
+    const identifier = (walletId || address) as string;
+
+    if (!identifier || !symbol) {
+      res.status(400).json({
+        success: false,
+        error: "Missing parameters",
+        message: "walletId (or address) and symbol are required",
+      });
+      return;
+    }
+
+    const result = await asterBrokerSpotTradingService.getAllOrders(identifier, {
+      symbol: symbol as string,
+      orderId: orderId ? Number(orderId) : undefined,
+      startTime: startTime ? Number(startTime) : undefined,
+      endTime: endTime ? Number(endTime) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
+
+    res.status(200).json({
+      success: true,
+      allOrders: result,
+    });
+  } catch (error: any) {
+    console.error("[AsterBrokerController] Error getting all orders:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to get all orders",
+      message: error.message || "Unknown error occurred",
+    });
+  }
+}
+
+/**
+ * Get user's trade history
+ * GET /api/aster/broker/trades?walletId=xxx&symbol=ETHUSDT
+ */
+export async function getMyTrades(req: Request, res: Response): Promise<void> {
+  try {
+    const { walletId, address, symbol, orderId, startTime, endTime, fromId, limit } = req.query;
+    const identifier = (walletId || address) as string;
+
+    if (!identifier || !symbol) {
+      res.status(400).json({
+        success: false,
+        error: "Missing parameters",
+        message: "walletId (or address) and symbol are required",
+      });
+      return;
+    }
+
+    const result = await asterBrokerSpotTradingService.getMyTrades(identifier, {
+      symbol: symbol as string,
+      orderId: orderId ? Number(orderId) : undefined,
+      startTime: startTime ? Number(startTime) : undefined,
+      endTime: endTime ? Number(endTime) : undefined,
+      fromId: fromId ? Number(fromId) : undefined,
+      limit: limit ? Number(limit) : undefined,
+    });
+
+    res.status(200).json({
+      success: true,
+      trades: result,
+    });
+  } catch (error: any) {
+    console.error("[AsterBrokerController] Error getting my trades:", error);
+    res.status(500).json({
+      success: false,
+      error: "Failed to get user trades",
+      message: error.message || "Unknown error occurred",
     });
   }
 }

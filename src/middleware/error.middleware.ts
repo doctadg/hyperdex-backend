@@ -1,9 +1,3 @@
-/**
- * Error Handling Middleware
- * - Global error handler
- * - 404 handler for unknown routes
- */
-
 import { Request, Response, NextFunction } from "express";
 import { logError } from "../utils/logger";
 

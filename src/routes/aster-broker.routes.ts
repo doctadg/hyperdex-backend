@@ -5,7 +5,10 @@ import {
   getOrder,
   closePosition,
   cancelOrder,
-  getAccountInfo
+  getAccountInfo,
+  getOpenOrders,
+  getAllOrders,
+  getMyTrades,
 } from '../controllers/aster-broker.controller';
 
 const router = Router();
@@ -18,6 +21,10 @@ router.post('/positions/open', placeOrder);
 router.post('/positions/close', closePosition);
 router.get('/order', getOrder);
 router.delete('/order', cancelOrder);
-router.get('/info', getAccountInfo)
+router.get('/info', getAccountInfo);
+router.get('/orders/open', getOpenOrders);
+router.get('/orders/all', getAllOrders);
+router.get('/trades', getMyTrades);
+
 
 export default router;
