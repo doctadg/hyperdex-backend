@@ -422,6 +422,8 @@ export class HyperliquidTradingAdapter implements IPerpetualAdapter {
       logger.info('Placing order:', request);
       
       // Get asset metadata
+      request.symbol = request.symbol + `-PERP`; // use only when symbol is like - BTC
+
       const assetInfo = this.assetMetadata.get(request.symbol);
       if (!assetInfo) {
         throw new Error(`Unknown symbol: ${request.symbol}. Asset metadata not loaded.`);
