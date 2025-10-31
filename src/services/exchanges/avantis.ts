@@ -3,6 +3,10 @@ import { exchangeConfig } from '@/config/exchanges';
 import { OrderbookSnapshot, Trade } from '@/types';
 import { logger } from '@/utils/logger';
 
+import { 
+  OrderSide,
+} from '@/types/trades';
+
 interface AvantisMessage {
   stream?: string;
   data?: unknown;
@@ -193,7 +197,8 @@ export class AvantisClient extends BaseExchangeClient {
       exchange: 'avantis',
       price: data.p,
       size: data.q,
-      side: data.m ? 'sell' : 'buy',
+      // side: data.m ? 'sell' : 'buy',
+      side: data.m ? OrderSide.SELL : OrderSide.BUY,
       timestamp: data.E,
     };
 

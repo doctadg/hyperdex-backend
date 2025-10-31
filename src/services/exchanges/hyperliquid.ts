@@ -5,10 +5,10 @@ import fetch from 'node-fetch';
 import { BaseExchangeClient } from './base';
 import { exchangeConfig } from '@/config/exchanges';
 import { OrderbookSnapshot, Trade } from '@/types';
-import { 
+import {
   IPerpetualAdapter,
-  PlaceOrderRequest, 
-  OrderResponse, 
+  PlaceOrderRequest,
+  OrderResponse,
   CancelResponse,
   Order,
   Position,
@@ -20,6 +20,8 @@ import {
   PositionSide,
   MarginMode,
 } from '@/types/trades';
+import { OrderService } from '@/services/database/OrderService';
+import { OrderEntity } from '@/services/database/OrderService';
 import { Orderbook } from '@/types/orderbook';
 import { logger } from '@/utils/logger';
 
@@ -112,12 +114,12 @@ export class HyperliquidClient extends BaseExchangeClient {
 
   async disconnect(): Promise<void> {
     this.stopHeartbeat();
-    
+
     if (this.ws) {
       this.ws.close();
       this.ws = null;
     }
-    
+
     this.isConnected = false;
     this.isConnecting = false;
     this.subscriptions.clear();
@@ -164,7 +166,7 @@ export class HyperliquidClient extends BaseExchangeClient {
     for (const symbol of symbols) {
       this.subscriptions.delete(symbol);
     }
-    
+
     // Note: Hyperliquid doesn't have explicit unsubscribe in their API
     // We just stop processing data for these symbols
     logger.info(`Hyperliquid unsubscribed from symbols:`, symbols);
@@ -179,8 +181,8 @@ export class HyperliquidClient extends BaseExchangeClient {
     if (message.channel) {
       // Silently ignore control/response channels
       if (message.channel === 'pong' ||
-          message.channel === 'error' ||
-          message.channel === 'subscriptionResponse') {
+        message.channel === 'error' ||
+        message.channel === 'subscriptionResponse') {
         return;
       }
 
@@ -233,10 +235,10 @@ export class HyperliquidClient extends BaseExchangeClient {
       exchange: 'hyperliquid' as const,
       price: tradeData.px,
       size: tradeData.sz,
-      side: tradeData.side === 'buy' ? OrderSide.BUY : OrderSide.SELL,  
+      side: tradeData.side === 'buy' ? OrderSide.BUY : OrderSide.SELL,
       timestamp: tradeData.time,
     }));
-    
+
     this.emit('trades', trades);
   }
 
@@ -340,17 +342,17 @@ export class HyperliquidClient extends BaseExchangeClient {
 export class HyperliquidTradingAdapter implements IPerpetualAdapter {
   readonly id = 'hyperliquid';
   readonly name = 'Hyperliquid';
-  
+
   private sdk: Hyperliquid;
   private wallet: ethers.Wallet;
   private baseUrl: string;
   private isTestnet: boolean;
-  
+
   private symbolToIndex = new Map<string, number>();
   private indexToSymbol = new Map<number, string>();
   private assetMetadata = new Map<string, { universe: number; szDecimals: number }>(); // ADDED
   private metadata?: HLMeta;
-  private isInitialized = false; 
+  private isInitialized = false;
 
   constructor(config: { privateKey: string; isTestnet?: boolean }) {
     this.wallet = new ethers.Wallet(config.privateKey);
@@ -361,7 +363,7 @@ export class HyperliquidTradingAdapter implements IPerpetualAdapter {
       privateKey: config.privateKey,
       testnet: this.isTestnet,
     });
-    
+
     logger.info(`Hyperliquid trading adapter initialized for ${this.isTestnet ? 'TESTNET' : 'MAINNET'}`);
   }
 
@@ -370,7 +372,7 @@ export class HyperliquidTradingAdapter implements IPerpetualAdapter {
       logger.info('Initializing Hyperliquid trading adapter...');
       const meta = await this.sdk.info.perpetuals.getMeta();
       this.metadata = meta;
-      
+
       meta.universe.forEach((asset, index) => {
         this.symbolToIndex.set(asset.name, index);
         this.indexToSymbol.set(index, asset.name);
@@ -380,7 +382,7 @@ export class HyperliquidTradingAdapter implements IPerpetualAdapter {
           szDecimals: asset.szDecimals,
         });
       });
-      
+
       logger.info(`✓ Loaded metadata for ${this.symbolToIndex.size} symbols`);
       logger.info(`✓ Asset metadata populated: ${this.assetMetadata.size} assets`); // ADD THIS
     } catch (error) {
@@ -420,7 +422,7 @@ export class HyperliquidTradingAdapter implements IPerpetualAdapter {
   async placeOrder(request: PlaceOrderRequest): Promise<OrderResponse> {
     try {
       logger.info('Placing order:', request);
-      
+
       // Get asset metadata
       request.symbol = request.symbol + `-PERP`; // use only when symbol is like - BTC
 
@@ -435,11 +437,12 @@ export class HyperliquidTradingAdapter implements IPerpetualAdapter {
 
       const timeInForce = request.timeInForce === 'POST_ONLY' ? 'Alo' : 'Gtc';
 
+      // Place order on Hyperliquid
       const result = await this.sdk.exchange.placeOrder({
         coin: request.symbol,
         is_buy: request.side === 'BUY',
-        sz: size,  // SDK handles trailing zeros automatically
-        limit_px: price,  // SDK handles trailing zeros automatically
+        sz: size,
+        limit_px: price,
         order_type: { limit: { tif: timeInForce } },
         reduce_only: request.reduceOnly || false,
       });
@@ -448,14 +451,23 @@ export class HyperliquidTradingAdapter implements IPerpetualAdapter {
 
       // Parse SDK response
       const status = result?.response?.data?.statuses?.[0];
-      
-      if (result.status === 'err') {
-        throw new Error(`Order failed: ${result.response}`);
+
+      // Check for error in status
+      if (status?.error) {
+        throw new Error(`Order error: ${status.error}`);
       }
 
-      const orderId = status?.resting?.oid?.toString() || Date.now().toString();
+      // Also throw if no resting order ID
+      if (!status?.resting?.oid && !status?.filled?.oid) {
+        throw new Error(
+          `Order placement failed: No order ID returned. Status: ${JSON.stringify(status)}`
+        );
+      }
 
-      return {
+      const orderId = status?.resting?.oid?.toString() || status?.filled?.oid.toString();
+
+      // Create response object
+      const orderResponse: OrderResponse = {
         orderId,
         status: 'OPEN' as OrderStatus,
         symbol: request.symbol,
@@ -466,6 +478,47 @@ export class HyperliquidTradingAdapter implements IPerpetualAdapter {
         filledQuantity: '0',
         timestamp: Date.now(),
       };
+
+      // **SAVE ORDER TO DATABASE**
+      const dbOrder: Omit<OrderEntity, 'id' | 'createdAt' | 'updatedAt'> = {
+        walletAddress: this.getAddress(),
+        platform: 'hyperliquid',
+        orderId: orderId,
+        clientOrderId: request.clientOrderId,
+        symbol: request.symbol,
+        side: request.side === 'BUY' ? 'buy' : 'sell',
+        type: request.type === 'MARKET' ? 'market' : 'limit',
+        status: 'open',
+        price: request.price || '0',
+        quantity: request.quantity,
+        filledQuantity: '0',
+        remainingQuantity: request.quantity,
+        timeInForce: request.timeInForce as any,
+        reduceOnly: request.reduceOnly || false,
+        platformData: {
+          // Only store serializable data
+          hlOrderId: orderId,
+          coin: request.symbol,
+          size: size,
+          price: price,
+          side: request.side,
+          timestamp: Date.now(),
+          // Store only essential response data, not full objects
+          responseOk: status?.resting ? true : false,
+        },
+        timestamp: Date.now(),
+      };
+
+      try {
+        const savedOrder = await OrderService.createOrder(dbOrder);
+        logger.info(`✓ Order saved to database: ${savedOrder.id}`);
+      } catch (dbError) {
+        logger.error('Failed to save order to database:', dbError);
+        // Don't throw - order was placed on exchange even if DB save failed
+      }
+
+      return orderResponse;
+
     } catch (error) {
       logger.error('Failed to place order:', error);
       throw error;
@@ -483,64 +536,126 @@ export class HyperliquidTradingAdapter implements IPerpetualAdapter {
         coin: symbol,
         o: Number(orderId),
       });
-      
+
       if (result.status === 'err') {
         throw new Error(`Cancel failed: ${result.response}`);
       }
-      
+
       logger.info(`Order ${orderId} cancelled successfully`);
-      
+
       return { orderId, symbol, status: 'SUCCESS' };
     } catch (error) {
       logger.error('Failed to cancel order:', error);
       throw error;
     }
   }
-
+  
   async getOpenOrders(): Promise<Order[]> {
+  try {
+    logger.debug('Fetching open orders from Hyperliquid SDK');
+    
+    // **STEP 1: Try SDK first**
     try {
-      logger.debug('Fetching open orders');
+      const orders = await this.sdk.info.getUserOpenOrders(this.getAddress());
       
-      const orders = await this.sdk.info.getUserOpenOrders(this.wallet.address);
-      
-      if (!orders || orders.length === 0) {
-        return [];
+      // If SDK returns orders, use them
+      if (orders && orders.length > 0) {
+        logger.info(`✓ Fetched ${orders.length} orders from Hyperliquid SDK`);
+        
+        return orders.map((o: any) => ({
+          orderId: o.oid.toString(),
+          symbol: o.coin,
+          side: o.side === 'B' ? 'BUY' as OrderSide : 'SELL' as OrderSide,
+          type: 'LIMIT' as OrderType,
+          status: 'OPEN' as OrderStatus,
+          price: o.limitPx,
+          quantity: o.sz,
+          timestamp: o.timestamp,
+        }));
       }
-
-      logger.debug(`Received ${orders.length} open orders from Hyperliquid`);
-      
-      return orders.map((o: any) => ({
-        orderId: o.oid.toString(),
-        symbol: o.coin,
-        side: o.side === 'B' ? 'BUY' as OrderSide : 'SELL' as OrderSide,
-        type: 'LIMIT' as OrderType,
-        status: 'OPEN' as OrderStatus,
-        price: o.limitPx,
-        quantity: o.sz,
-        timestamp: o.timestamp,
-      }));
-    } catch (error) {
-      logger.error('Failed to get orders:', error);
-      
-      // If it's a 422 error with no orders, return empty array
-      if (error instanceof Error && error.message.includes('422')) {
-        logger.info('No open orders (422 response)');
-        return [];
-      }
-      
-      throw error;
+    } catch (sdkError) {
+      logger.warn('SDK call failed:', sdkError);
     }
-  }
 
+    // **STEP 2: If SDK returns 0 or fails, get from database**
+    logger.info('SDK returned no orders, fetching from database...');
+    
+    const dbOrders = await OrderService.getOrdersByWallet(
+      this.getAddress(),
+      'hyperliquid',
+      'open',
+      100
+    );
+
+    if (dbOrders && dbOrders.length > 0) {
+      logger.info(`✓ Fetched ${dbOrders.length} orders from database`);
+      
+      return dbOrders.map((order) => ({
+        orderId: order.orderId,
+        symbol: order.symbol,
+        side: order.side === 'buy' ? 'BUY' as OrderSide : 'SELL' as OrderSide,
+        type: order.type === 'market' ? 'MARKET' as OrderType : 'LIMIT' as OrderType,
+        status: 'OPEN' as OrderStatus,
+        price: order.price,
+        quantity: order.quantity,
+        timestamp: order.timestamp,
+      }));
+    }
+
+    logger.info('No orders found in SDK or database');
+    return [];
+
+  } catch (error) {
+    logger.error('Failed to get open orders:', error);
+    throw error;
+  }
+}
+
+
+  // async getOpenOrders(): Promise<Order[]> {
+  //   try {
+  //     logger.debug('Fetching open orders');
+
+  //     const orders = await this.sdk.info.getUserOpenOrders(this.wallet.address);
+
+  //     if (!orders || orders.length === 0) {
+  //       return [];
+  //     }
+
+  //     logger.debug(`Received ${orders.length} open orders from Hyperliquid`);
+
+  //     return orders.map((o: any) => ({
+  //       orderId: o.oid.toString(),
+  //       symbol: o.coin,
+  //       side: o.side === 'B' ? 'BUY' as OrderSide : 'SELL' as OrderSide,
+  //       type: 'LIMIT' as OrderType,
+  //       status: 'OPEN' as OrderStatus,
+  //       price: o.limitPx,
+  //       quantity: o.sz,
+  //       timestamp: o.timestamp,
+  //     }));
+  //   } catch (error) {
+  //     logger.error('Failed to get orders:', error);
+
+  //     // If it's a 422 error with no orders, return empty array
+  //     if (error instanceof Error && error.message.includes('422')) {
+  //       logger.info('No open orders (422 response)');
+  //       return [];
+  //     }
+
+  //     throw error;
+  //   }
+  // }
+  
   async getPositions(): Promise<Position[]> {
     try {
       const state = await this.sdk.info.perpetuals.getClearinghouseState(this.wallet.address);
       
       return state.assetPositions
-        .filter((ap: any) => parseFloat(ap.position.szi) !== 0)
-        .map((ap: any) => {
-          const szi = parseFloat(ap.position.szi);
-          return {
+      .filter((ap: any) => parseFloat(ap.position.szi) !== 0)
+      .map((ap: any) => {
+        const szi = parseFloat(ap.position.szi);
+        return {
             symbol: ap.position.coin,
             exchange: 'hyperliquid' as const,
             walletAddress: this.getAddress(),
@@ -581,16 +696,16 @@ export class HyperliquidTradingAdapter implements IPerpetualAdapter {
   async getTicker(symbol: string): Promise<Ticker> {
     try {
       const mids = await this.infoRequest<Record<string, string>>({ type: 'allMids' });
-      
+
       if (!mids[symbol]) {
         throw new Error(`Symbol not found: ${symbol}`);
       }
-      
+
       try {
         const response = await this.infoRequest<any>({ type: 'metaAndAssetCtxs' });
         const contexts = response[1] as HLAssetCtx[];
         const ctx = contexts.find(c => c.coin === symbol);
-        
+
         if (ctx) {
           return {
             symbol,
@@ -604,7 +719,7 @@ export class HyperliquidTradingAdapter implements IPerpetualAdapter {
       } catch (e) {
         // Fallback to mid price
       }
-      
+
       return {
         symbol,
         exchange: 'hyperliquid' as const,
@@ -622,33 +737,33 @@ export class HyperliquidTradingAdapter implements IPerpetualAdapter {
     try {
       // Use symbol as-is (don't add -PERP, SDK handles conversion)
       const book = await this.sdk.info.getL2Book(symbol);
-      
+
       const timestamp = Date.now(); // Use current time since book.time doesn't exist
-      
+
       const levels = book.levels || [[], []];
       const bidsArray = levels[0] as Array<{ px: string; sz: string; n: number }>;
       const asksArray = levels[1] as Array<{ px: string; sz: string; n: number }>;
-      
+
       const bidLevels = bidsArray.slice(0, 20).map(b => ({
         price: b.px,
         size: b.sz,
         timestamp: timestamp, // Use timestamp variable
       }));
-      
+
       const askLevels = asksArray.slice(0, 20).map(a => ({
         price: a.px,
         size: a.sz,
         timestamp: timestamp, // Use timestamp variable
       }));
-      
+
       const bidTotalSize = bidLevels.reduce((sum, l) => sum + parseFloat(l.size), 0);
       const askTotalSize = askLevels.reduce((sum, l) => sum + parseFloat(l.size), 0);
-      
+
       const bestBid = bidLevels[0] ? parseFloat(bidLevels[0].price) : 0;
       const bestAsk = askLevels[0] ? parseFloat(askLevels[0].price) : 0;
       const spread = bestAsk - bestBid;
       const midPrice = (bestBid + bestAsk) / 2;
-      
+
       return {
         symbol,
         exchange: 'hyperliquid',

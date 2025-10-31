@@ -36,8 +36,6 @@ function getAdapter(exchange: string, res: Response): IPerpetualAdapter | null {
     return null;
   }
 
-  console.log("here Adapter", adapter);
-  console.log("here exchange", exchange);
   return adapter;
 }
 
@@ -391,9 +389,7 @@ export async function getOpenOrders(req: Request, res: Response): Promise<void> 
 export async function placeOrder(req: Request, res: Response): Promise<void> {
   try {
     const { exchange } = req.params;
-    console.log(`Placing order on ${exchange}`);
 
-    console.log('Place order request body:', req.body);
     const adapter = getAdapter(exchange, res);
     if (!adapter) return;
     
